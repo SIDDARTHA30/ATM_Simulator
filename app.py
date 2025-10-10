@@ -1,15 +1,16 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
-import random
 
 # -------------------------
-# Database Setup
+# Connect to local SQLite DB
 # -------------------------
 conn = sqlite3.connect("atm.db", check_same_thread=False)
 c = conn.cursor()
 
+# -------------------------
+# Create tables if not exist
+# -------------------------
 c.execute('''
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,20 +72,35 @@ if "user" not in st.session_state:
     st.session_state.user = None
 if "attempts" not in st.session_state:
     st.session_state.attempts = 0
+if "pin_input" not in st.session_state:
+    st.session_state.pin_input = ""
+if "atm_action" not in st.session_state:
+    st.session_state.atm_action = None
+if "num_input" not in st.session_state:
+    st.session_state.num_input = ""
 
-st.set_page_config(page_title="ATM Simulator", layout="wide", page_icon="🏦")
-st.markdown(
-    """
-    <style>
-    .stButton>button {height:3em;width:100%;}
-    .card {padding:20px;border-radius:15px;background:#f5f5f5;text-align:center;}
-    </style>
-    """, unsafe_allow_html=True
-)
-st.title("🏦 ATM Simulator")
+# Initialize delete/clear flags
+for k in ["pin_input", "num_input"]:
+    if k + "_del" not in st.session_state:
+        st.session_state[k + "_del"] = False
+    if k + "_clear" not in st.session_state:
+        st.session_state[k + "_clear"] = False
 
 # -------------------------
-# Sidebar
+# Page Config & Style
+# -------------------------
+st.set_page_config(page_title="ATM Simulator", layout="wide", page_icon="🏦")
+st.markdown("""
+<style>
+.stButton>button {height:3em;width:100%; margin-top:5px;}
+.card {padding:20px;border-radius:15px;background:#f5f5f5;text-align:center;margin-bottom:10px;}
+h1, h2, h3 {color:#003366;}
+</style>
+""", unsafe_allow_html=True)
+st.title("🏦 ATM Simulator - Realistic ATM Mode")
+
+# -------------------------
+# Sidebar Menu
 # -------------------------
 st.sidebar.title("ATM Menu")
 menu = ["Register", "Login", "Admin View"]
@@ -105,22 +121,45 @@ if choice == "Register":
             st.error("❌ PIN must be 4 digits")
 
 # -------------------------
-# Login
+# Numeric Keypad Helper
 # -------------------------
-elif choice == "Login":
-    st.subheader("🔑 Login")
+def keypad_input(label, key):
+    st.markdown(f"**{label}:** `{st.session_state[key]}`")
+    cols = st.columns(3)
+    for i, num in enumerate(range(1, 10)):
+        if cols[i % 3].button(str(num), key=f"{key}_{num}"):
+            st.session_state[key] += str(num)
+    cols[0].button("0", key=f"{key}_0")
+    cols[1].button("⌫", key=f"{key}_del")
+    cols[2].button("Clear", key=f"{key}_clear")
+    
+    if st.session_state[key + "_del"]:
+        st.session_state[key] = st.session_state[key][:-1]
+        st.session_state[key + "_del"] = False
+    if st.session_state[key + "_clear"]:
+        st.session_state[key] = ""
+        st.session_state[key + "_clear"] = False
+
+# -------------------------
+# Login with Keypad
+# -------------------------
+if choice == "Login":
+    st.subheader("🔑 Login with Numeric Keypad")
     if st.session_state.user is None:
         name = st.text_input("Name", key="login_name")
-        pin = st.text_input("PIN", type="password", key="login_pin")
+        st.markdown("Enter 4-digit PIN:")
+        keypad_input("PIN", "pin_input")
         if st.button("Login"):
-            user = get_user(name, pin)
+            user = get_user(name, st.session_state.pin_input)
             if user:
                 st.session_state.user = user
+                st.session_state.pin_input = ""
                 st.success(f"Welcome {user['name']}! 🎉")
             else:
                 st.session_state.attempts += 1
                 remaining = 3 - st.session_state.attempts
                 st.error(f"Invalid credentials. {remaining} attempts left.")
+                st.session_state.pin_input = ""
                 if st.session_state.attempts >= 3:
                     st.warning("Card Blocked. Please contact bank.")
     
@@ -136,46 +175,58 @@ elif choice == "Login":
         col2.button("💵 Deposit Money", key="deposit_button")
         col3.button("💸 Withdraw Money", key="withdraw_button")
         
+        # ATM Action Selection
+        if st.session_state.atm_action is None:
+            cols = st.columns(4)
+            if cols[0].button("💵 Deposit"):
+                st.session_state.atm_action = "Deposit"
+                st.session_state.num_input = ""
+            if cols[1].button("💸 Withdraw"):
+                st.session_state.atm_action = "Withdraw"
+                st.session_state.num_input = ""
+            if cols[2].button("🧾 History"):
+                st.session_state.atm_action = "History"
+            if cols[3].button("🚪 Exit"):
+                st.warning("👋 Thank you for banking with us!")
+                st.session_state.user = None
+                st.session_state.attempts = 0
+                st.session_state.atm_action = None
+        
         # -------------------------
-        # ATM Options as Buttons
+        # Deposit / Withdraw via Keypad
         # -------------------------
-        st.markdown("### 🔹 ATM Options")
-        options_col1, options_col2, options_col3 = st.columns(3)
+        if st.session_state.atm_action in ["Deposit", "Withdraw"]:
+            st.markdown(f"### Enter Amount to {st.session_state.atm_action}")
+            keypad_input("Amount", "num_input")
+            if st.button("Confirm"):
+                amt = int(st.session_state.num_input) if st.session_state.num_input else 0
+                if st.session_state.atm_action == "Deposit":
+                    if amt > 0 and amt <= 50000:
+                        new_balance = user['balance'] + amt
+                        update_balance(user['id'], new_balance)
+                        add_transaction(user['id'], "Deposit", amt)
+                        st.session_state.user['balance'] = new_balance
+                        st.balloons()
+                        st.success(f"✅ Deposited ₹{amt}. New Balance ₹{new_balance}")
+                        st.session_state.atm_action = None
+                    else:
+                        st.error("❌ Invalid deposit amount (1-50000)")
+                elif st.session_state.atm_action == "Withdraw":
+                    if amt > 0 and amt <= 20000 and amt % 100 == 0 and amt <= user['balance'] - 1000:
+                        new_balance = user['balance'] - amt
+                        update_balance(user['id'], new_balance)
+                        add_transaction(user['id'], "Withdraw", amt)
+                        st.session_state.user['balance'] = new_balance
+                        st.balloons()
+                        st.success(f"✅ Withdrawn ₹{amt}. New Balance ₹{new_balance}")
+                        st.session_state.atm_action = None
+                    else:
+                        st.error("❌ Invalid withdraw amount or insufficient funds")
         
-        if options_col1.button("💰 Check Balance"):
-            st.info(f"💰 Your Balance: ₹{user['balance']}")
-        
-        if options_col2.button("💵 Deposit"):
-            amt = st.number_input("💵 Amount to Deposit", min_value=1, key="deposit_amt")
-            if st.button("Confirm Deposit"):
-                if amt > 50000:
-                    st.error("❌ Deposit limit exceeded. Max ₹50,000")
-                else:
-                    new_balance = user['balance'] + amt
-                    update_balance(user['id'], new_balance)
-                    add_transaction(user['id'], "Deposit", amt)
-                    st.session_state.user['balance'] = new_balance
-                    st.balloons()
-                    st.success(f"✅ Deposited ₹{amt}. New Balance ₹{new_balance}")
-        
-        if options_col3.button("💸 Withdraw"):
-            amt = st.number_input("💸 Amount to Withdraw", min_value=1, key="withdraw_amt")
-            if st.button("Confirm Withdraw"):
-                if amt > 20000:
-                    st.error("❌ Withdraw limit ₹20,000")
-                elif amt % 100 != 0:
-                    st.error("❌ Amount must be multiple of 100")
-                elif amt > user['balance'] - 1000:
-                    st.error("❌ Insufficient funds or minimum ₹1000 required")
-                else:
-                    new_balance = user['balance'] - amt
-                    update_balance(user['id'], new_balance)
-                    add_transaction(user['id'], "Withdraw", amt)
-                    st.session_state.user['balance'] = new_balance
-                    st.balloons()
-                    st.success(f"✅ Withdrawn ₹{amt}. New Balance ₹{new_balance}")
-        
-        if st.button("🧾 Transaction History"):
+        # -------------------------
+        # Transaction History
+        # -------------------------
+        if st.session_state.atm_action == "History":
             transactions = get_transactions(user['id'])
             if transactions:
                 df = pd.DataFrame(transactions, columns=["Type", "Amount", "Date"])
@@ -183,11 +234,7 @@ elif choice == "Login":
                 st.table(df.style.applymap(lambda x: 'color: green' if x=="Deposit" else 'color: red', subset=['Type']))
             else:
                 st.info("ℹ️ No transactions yet.")
-        
-        if st.button("🚪 Exit"):
-            st.warning("👋 Thank you for banking with us!")
-            st.session_state.user = None
-            st.session_state.attempts = 0
+            st.session_state.atm_action = None
 
 # -------------------------
 # Admin View
